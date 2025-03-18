@@ -52,6 +52,7 @@ Before starting the deployment, ensure you have the following:
 ### Create Global AMI (Amazon Machine Image)
 
 Creating a Global AMI involves installing necessary agents and software on an EC2 instance, which will be used to create custom AMIs for different components.
+Launch an EC2 instance and install this neccesary agents
 
 1. **Install AWS CLI**:
    - Install AWS CLI by following the instructions [here](https://aws.amazon.com/cli/).
