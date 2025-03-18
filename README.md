@@ -105,6 +105,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
 
 2. **For Apache Tomcat**:
    - Launch another EC2 instance and install Apache Tomcat:
+   - Update the Apache Tomcat 9 version with latest from https://tomcat.apache.org/download-90.cgi
 
    ```bash
    #!/bin/bash
