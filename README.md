@@ -96,20 +96,27 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    - Create a custom CloudWatch metric for memory usage:
 
    ```bash
-   #!/bin/bash
-   while true; do
+     #!/bin/bash
+      while true; do
      memory_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
-     instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+  
+     # Get token for IMDSv2
+     TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+  
+     # Use token to get instance ID
+     instance_id=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
   
      if [ -z "$instance_id" ]; then
        echo "Warning: Could not retrieve instance ID, using 'unknown-instance' instead"
        instance_id="unknown-instance"
+     else
+       echo "Successfully retrieved instance ID: $instance_id"
      fi
   
      aws cloudwatch put-metric-data --metric-name MemoryUsage --namespace Custom --value $memory_usage --dimensions InstanceId=$instance_id
      sleep 60
    done &
-   ```
+      ```
 
 2. **For Apache Tomcat**:
    - Launch another EC2 instance and install Apache Tomcat:
