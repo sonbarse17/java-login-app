@@ -66,7 +66,7 @@ Creating a Global AMI involves installing necessary agents and software on an EC
    - Install CloudWatch Agent to monitor your EC2 instances.
 
    ```bash
-   sudo yum install amazon-cloudwatch-agent
+   sudo yum install amazon-cloudwatch-agent -y
    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
    ```
 
@@ -74,7 +74,7 @@ Creating a Global AMI involves installing necessary agents and software on an EC
    - The SSM Agent is necessary for managing EC2 instances via AWS Systems Manager.
 
    ```bash
-   sudo yum install amazon-ssm-agent
+   sudo yum install amazon-ssm-agent -y
    sudo systemctl start amazon-ssm-agent
    sudo systemctl enable amazon-ssm-agent
    ```
@@ -87,7 +87,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    - Launch an EC2 instance and install Nginx:
 
    ```bash
-   sudo amazon-linux-extras install nginx1.12
+   sudo yum install nginx -y
    sudo systemctl start nginx
    sudo systemctl enable nginx
    ```
@@ -107,7 +107,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    - Launch another EC2 instance and install Apache Tomcat:
 
    ```bash
-   sudo yum install java-11-openjdk-devel
+   sudo yum install java-11-openjdk-devel -y
    wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.53/bin/apache-tomcat-9.0.53.tar.gz
    sudo tar -xvzf apache-tomcat-9.0.53.tar.gz -C /opt/
    sudo ln -s /opt/apache-tomcat-9.0.53 /opt/tomcat
