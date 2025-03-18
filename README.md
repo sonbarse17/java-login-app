@@ -95,71 +95,71 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
 
    - Create a custom CloudWatch metric for memory usage:
 '''bash
-#!/bin/bash
+   #!/bin/bash
 
-# Cache the instance ID to reduce metadata service calls
-CACHED_INSTANCE_ID=""
+   # Cache the instance ID to reduce metadata service calls
+   CACHED_INSTANCE_ID=""
 
-get_instance_id() {
-  # If we already have a valid instance ID cached, use it
-  if [ -n "$CACHED_INSTANCE_ID" ]; then
-    echo "$CACHED_INSTANCE_ID"
-    return
-  }
+   get_instance_id() {
+     # If we already have a valid instance ID cached, use it
+     if [ -n "$CACHED_INSTANCE_ID" ]; then
+       echo "$CACHED_INSTANCE_ID"
+       return
+     }
   
-  local max_attempts=3
-  local attempt=1
-  local instance_id=""
+     local max_attempts=3
+     local attempt=1
+     local instance_id=""
   
-  while [ $attempt -le $max_attempts ] && [ -z "$instance_id" ]; do
-    # Get token for IMDSv2 with increased timeout
-    TOKEN=$(curl -s -f -m 10 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+     while [ $attempt -le $max_attempts ] && [ -z "$instance_id" ]; do
+       # Get token for IMDSv2 with increased timeout
+       TOKEN=$(curl -s -f -m 10 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
     
-    if [ -n "$TOKEN" ]; then
-      # Use token to get instance ID
-      instance_id=$(curl -s -f -m 10 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-    else
-      # Fallback to IMDSv1 if token request failed
-      instance_id=$(curl -s -f -m 10 http://169.254.169.254/latest/meta-data/instance-id)
-    fi
+       if [ -n "$TOKEN" ]; then
+         # Use token to get instance ID
+         instance_id=$(curl -s -f -m 10 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+       else
+         # Fallback to IMDSv1 if token request failed
+         instance_id=$(curl -s -f -m 10 http://169.254.169.254/latest/meta-data/instance-id)
+       fi
     
-    if [ -z "$instance_id" ]; then
-      echo "Attempt $attempt failed to retrieve instance ID, waiting 5 seconds before retry" >&2
-      sleep 5
-      attempt=$((attempt+1))
-    fi
-  done
+       if [ -z "$instance_id" ]; then
+         echo "Attempt $attempt failed to retrieve instance ID, waiting 5 seconds before retry" >&2
+         sleep 5
+         attempt=$((attempt+1))
+       fi
+     done
   
-  # If successful, cache the result
-  if [ -n "$instance_id" ]; then
-    CACHED_INSTANCE_ID="$instance_id"
-  fi
+     # If successful, cache the result
+     if [ -n "$instance_id" ]; then
+       CACHED_INSTANCE_ID="$instance_id"
+     fi
   
-  echo "$instance_id"
-}
+     echo "$instance_id"
+   }
 
-while true; do
-  memory_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
+   while true; do
+     memory_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
   
-  instance_id=$(get_instance_id)
+     instance_id=$(get_instance_id)
   
-  if [ -z "$instance_id" ]; then
-    echo "Warning: Could not retrieve instance ID after multiple attempts, using 'unknown-instance' instead" >&2
-    instance_id="unknown-instance"
-  else
-    echo "Using instance ID: $instance_id"
-  fi
+     if [ -z "$instance_id" ]; then
+       echo "Warning: Could not retrieve instance ID after multiple attempts, using 'unknown-instance' instead" >&2
+       instance_id="unknown-instance"
+     else
+       echo "Using instance ID: $instance_id"
+     fi
   
-  # Send metrics to CloudWatch
-  aws cloudwatch put-metric-data \
-    --metric-name MemoryUsage \
-    --namespace Custom \
-    --value $memory_usage \
-    --dimensions InstanceId=$instance_id 2>/dev/null
+     # Send metrics to CloudWatch
+     aws cloudwatch put-metric-data \
+       --metric-name MemoryUsage \
+       --namespace Custom \
+       --value $memory_usage \
+       --dimensions InstanceId=$instance_id 2>/dev/null
   
-  # Add randomness to the sleep to avoid synchronized polling
-  sleep $((60 + RANDOM % 10))
-done &
+     # Add randomness to the sleep to avoid synchronized polling
+     sleep $((60 + RANDOM % 10))
+   done &
 '''
 2. **For Apache Tomcat**:
    - Launch another EC2 instance and install Apache Tomcat:
