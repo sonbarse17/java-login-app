@@ -94,7 +94,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    ```
 
    - Create a custom CloudWatch metric for memory usage:
-'''bash
+   ```bash
    #!/bin/bash
 
    # Cache the instance ID to reduce metadata service calls
@@ -160,7 +160,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
      # Add randomness to the sleep to avoid synchronized polling
      sleep $((60 + RANDOM % 10))
    done &
-'''
+ ```
 2. **For Apache Tomcat**:
    - Launch another EC2 instance and install Apache Tomcat:
    - Update the Apache Tomcat 9 version with latest from https://tomcat.apache.org/download-90.cgi
