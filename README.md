@@ -107,11 +107,12 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    - Launch another EC2 instance and install Apache Tomcat:
 
    ```bash
-   sudo yum install java-11-openjdk-devel -y
-   wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.53/bin/apache-tomcat-9.0.53.tar.gz
-   sudo tar -xvzf apache-tomcat-9.0.53.tar.gz -C /opt/
-   sudo ln -s /opt/apache-tomcat-9.0.53 /opt/tomcat
-   sudo sh /opt/tomcat/bin/startup.sh
+   sudo yum install java -y
+   wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.102/bin/apache-tomcat-9.0.102.zip
+   unzip apache-tomcat-9.0.102.zip
+   cd apache-tomcat-9.0.102.zip
+   cd /bin
+   bash catalina.sh start
    ```
 
    - Configure Tomcat as a systemd service:
