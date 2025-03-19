@@ -240,7 +240,7 @@ Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of th
    echo "Installation complete!"
    echo "Access Tomcat at: http://$EC2_PUBLIC_IP:8080"
 
-      ```
+  ```
 
 3. **For Apache Maven Build Tool**:
    - Install Maven, Git, and JDK 11 on a separate EC2 instance:
