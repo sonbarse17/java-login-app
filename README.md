@@ -26,421 +26,527 @@
 
 The primary objective of this project is to deploy a scalable, highly available, and secure Java application using a 3-tier architecture. The application will be hosted on AWS, utilizing various services like EC2, RDS, and VPC to ensure its availability, scalability, and security. The application will be accessible to end-users via the public internet.
 
-## Pre-Requisites
-
-Before starting the deployment, ensure you have the following:
-
-1. **AWS Free Tier Account**:
-   - Sign up for an [Amazon Web Services (AWS) Free Tier account](https://aws.amazon.com/free/).
-   - Set up the AWS CLI on your local machine.
-   - Configure your CLI with `aws configure`.
-
-2. **GitHub Account and Repository**:
-   - Create a [GitHub account](https://github.com/join) if you don't have one.
-   - Fork the Java source code from the [Java-Login-App repository](https://github.com/NotHarshhaa/DevOps-Projects/blob/master/DevOps-Project-01/Java-Login-App) to your GitHub account.
-
-3. **SonarCloud Account**:
-   - Create an account on [SonarCloud](https://sonarcloud.io/) for static code analysis and code quality checks.
-   - Generate a SonarCloud token for integration with your GitHub repository.
-
-4. **JFrog Cloud Account**:
-   - Sign up for a [JFrog Cloud account](https://jfrog.com/start-free/).
-   - Set up a Maven repository in JFrog to store your build artifacts.
-
-## Pre-Deployment
-
-### Create Global AMI (Amazon Machine Image)
-
-Creating a Global AMI involves installing necessary agents and software on an EC2 instance, which will be used to create custom AMIs for different components.
-Launch an EC2 instance and install this neccesary agents
-
-1. **Install AWS CLI**:
-   - Install AWS CLI by following the instructions [here](https://aws.amazon.com/cli/).
-
-   ```bash
-   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-   unzip awscliv2.zip
-   sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
-   ```
-
-2. **Install CloudWatch Agent**:
-   - Install CloudWatch Agent to monitor your EC2 instances.
-
-   ```bash
-   sudo yum install amazon-cloudwatch-agent -y
-   sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
-   ```
-
-3. **Install AWS Systems Manager (SSM) Agent**:
-   - The SSM Agent is necessary for managing EC2 instances via AWS Systems Manager.
-
-   ```bash
-   sudo yum install amazon-ssm-agent -y
-   sudo systemctl start amazon-ssm-agent
-   sudo systemctl enable amazon-ssm-agent
-   ```
-
-### Create Golden AMIs
-
-Golden AMIs will be created for the different tiers (Nginx, Tomcat, Maven) of the architecture.
-
-1. **For Nginx**:
-   - Launch an EC2 instance and install Nginx:
-
-   ```bash
-   sudo yum install nginx -y
-   sudo systemctl start nginx
-   sudo systemctl enable nginx
-   ```
-
-   - Create a custom CloudWatch metric for memory usage:
-   ```bash
-      #!/bin/bash
-
-   # Cache the instance ID to reduce metadata service calls
-   declare -g CACHED_INSTANCE_ID=""
-
-   get_instance_id() {
-     # If we already have a valid instance ID cached, use it
-     if [ -n "$CACHED_INSTANCE_ID" ]; then
-       echo "$CACHED_INSTANCE_ID"
-       return
-     fi
-
-     local max_attempts=3
-     local attempt=1
-     local instance_id=""
-
-     while [ $attempt -le $max_attempts ] && [ -z "$instance_id" ]; do
-       # Get token for IMDSv2 with increased timeout
-       TOKEN=$(curl -s -f -m 10 -X PUT "http://169.254.169.254/latest/api/token" \
-         -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-
-       if [ -n "$TOKEN" ]; then
-         # Use token to get instance ID
-         instance_id=$(curl -s -f -m 10 -H "X-aws-ec2-metadata-token: $TOKEN" \
-           http://169.254.169.254/latest/meta-data/instance-id)
-       else
-         # Fallback to IMDSv1 if token request failed
-         instance_id=$(curl -s -f -m 10 http://169.254.169.254/latest/meta-data/instance-id)
-       fi
-
-       if [ -z "$instance_id" ]; then
-         echo "Attempt $attempt failed to retrieve instance ID, waiting 5 seconds before retry" >&2
-         sleep 5
-         attempt=$((attempt + 1))
-       fi
-     done
-   
-     # If successful, cache the result
-     if [ -n "$instance_id" ]; then
-       CACHED_INSTANCE_ID="$instance_id"
-     fi
-
-     echo "$instance_id"
-   }
-
-   while true; do
-     # Calculate memory usage safely
-     memory_usage=$(free | awk '/Mem:/ {print $3/$2 * 100.0}')
-
-     instance_id=$(get_instance_id)
-
-     if [ -z "$instance_id" ]; then
-       echo "Warning: Could not retrieve instance ID after multiple attempts, using 'unknown-instance' instead" >&2
-       instance_id="unknown-instance"
-     else
-       echo "Using instance ID: $instance_id"
-     fi
-   
-     # Send metrics to CloudWatch
-     aws cloudwatch put-metric-data \
-       --metric-name MemoryUsage \
-       --namespace Custom \
-       --value "$memory_usage" \
-       --dimensions InstanceId="$instance_id" 2>/dev/null
-
-     # Add randomness to the sleep to avoid synchronized polling
-     sleep $((60 + RANDOM % 10))
-   done
- ```
-2. **For Apache Tomcat**:
-   - Launch another EC2 instance and install Apache Tomcat:
-   - Update the Apache Tomcat 9 version with latest from https://tomcat.apache.org/download-90.cgi
-
-    ```bash
-      #!/bin/bash
-
-      # Set variables
-      TOMCAT_VERSION="9.0.102"
-      TOMCAT_URL="https://dlcdn.apache.org/tomcat/tomcat-9/v$TOMCAT_VERSION/bin/apache-tomcat-$TOMCAT_VERSION.tar.gz"
-      TOMCAT_DIR="/opt/tomcat9"
-      TOMCAT_USER="ec2-user"
-
-      echo "Updating system..."
-      sudo yum update -y
-
-      echo "Checking and enabling Amazon Linux extras..."
-      sudo yum install -y amazon-linux-extras
-      sudo amazon-linux-extras enable corretto8
-
-      echo "Installing Java..."
-      sudo yum install -y java-1.8.0-amazon-corretto-devel
-
-      # Verify Java installation
-         if ! java -version &>/dev/null; then
-          echo "Java installation failed! Exiting..."
-          exit 1
-         fi
-
-      echo "Downloading Apache Tomcat $TOMCAT_VERSION..."
-      cd /opt
-
-      # Try curl first, fallback to wget
-      if ! sudo curl -O $TOMCAT_URL; then
-          echo "Curl failed, trying wget..."
-          sudo yum install -y wget
-          sudo wget $TOMCAT_URL
-      fi
-
-      sudo tar -xvzf apache-tomcat-$TOMCAT_VERSION.tar.gz
-      sudo mv apache-tomcat-$TOMCAT_VERSION tomcat9
-      sudo rm -f apache-tomcat-$TOMCAT_VERSION.tar.gz
-
-      echo "Setting permissions..."
-      sudo chown -R $TOMCAT_USER:$TOMCAT_USER $TOMCAT_DIR
-      sudo chmod +x $TOMCAT_DIR/bin/*.sh
-
-      echo "Creating systemd service..."
-      sudo bash -c "cat > /etc/systemd/system/tomcat.service <<EOF
-      [Unit]
-      Description=Apache Tomcat 9
-      After=network.target
-
-      [Service]
-      Type=forking
-      User=$TOMCAT_USER
-      Group=$TOMCAT_USER
-      ExecStart=$TOMCAT_DIR/bin/startup.sh
-      ExecStop=$TOMCAT_DIR/bin/shutdown.sh
-      ExecStopPost=/bin/rm -rf /opt/tomcat9/work/Catalina/localhost/
-      Restart=on-failure
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF"
-
-      echo "Enabling and starting Tomcat service..."
-      sudo systemctl daemon-reload
-      sudo systemctl enable tomcat
-      sudo systemctl start tomcat
+# AWS 3-Tier Java Application Deployment Guide
 
-
-
-      # Get EC2 Public IP (if running on AWS)
-      EC2_PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-
-      echo "Installation complete!"
-      echo "Access Tomcat at: http://$EC2_PUBLIC_IP:8080"
+This guide provides step-by-step instructions for deploying a Java application on AWS using a 3-tier architecture. The architecture consists of:
+1. Frontend Tier (Nginx)
+2. Backend Tier (Apache Tomcat)
+3. Database Tier (MySQL RDS)
 
-  ```
-
-3. **For Apache Maven Build Tool**:
-   - Install Maven, Git, and JDK 11 on a separate EC2 instance:
+## Prerequisites
 
-   ```bash
-   sudo yum install git maven -y
-   ```
+Before starting, ensure you have the following:
 
+1. **AWS Free Tier Account**
+   - Sign up at https://aws.amazon.com/free/
+   - Install AWS CLI locally and configure with `aws configure`
 
-## VPC Deployment
+2. **GitHub Account**
+   - Create account at https://github.com/join
+   - Fork the Java application from https://github.com/NotHarshhaa/DevOps-Projects/blob/master/DevOps-Project-01/Java-Login-App
 
-### Network Setup
+3. **SonarCloud Account**
+   - Create account at https://sonarcloud.io/
+   - Generate a token for GitHub integration
 
-1. **Create VPCs**:
-   - Create two VPCs for the application architecture:
+4. **JFrog Cloud Account**
+   - Sign up at https://jfrog.com/start-free/
+   - Set up a Maven repository
 
-   ```bash
-   aws ec2 create-vpc --cidr-block 192.168.0.0/16 --region us-east-1
-   aws ec2 create-vpc --cidr-block 172.32.0.0/16 --region us-east-1
-   ```
+## Step 1: Pre-Deployment
 
-2. **NAT Gateway and Internet Gateway**:
-   - Set up a NAT Gateway in the public subnet and an Internet Gateway for outbound access:
+### 1.1 Create Base AMI
 
-   ```bash
-   aws ec2 create-nat-gateway --subnet-id subnet-xxxx --allocation-id eipalloc-xxxx
-   aws ec2 create-internet-gateway
-   aws ec2 attach-internet-gateway --vpc-id vpc-xxxx --internet-gateway-id igw-xxxx
-   ```
+1. Launch an EC2 instance with Amazon Linux 2
+2. Connect to the instance via SSH
+3. Install common agents:
 
-3. **Transit Gateway**:
-   - Create a Transit Gateway to allow communication between the VPCs:
+```bash
+# Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
 
-   ```bash
-   aws ec2 create-transit-gateway
-   aws ec2 attach-transit-gateway-vpc-attachment --transit-gateway-id tgw-xxxx --vpc-id vpc-xxxx
-   ```
+# Install CloudWatch Agent
+sudo yum install amazon-cloudwatch-agent -y
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
 
-4. **Route Tables**:
-   - Update route tables for the private and public subnets to route traffic through the NAT Gateway and Internet Gateway:
+# Install AWS Systems Manager Agent
+sudo yum install amazon-ssm-agent -y
+sudo systemctl start amazon-ssm-agent
+sudo systemctl enable amazon-ssm-agent
+```
 
-   ```bash
-   aws ec2 create-route-table --vpc-id vpc-xxxx
-   aws ec2 create-route --route-table-id rtb-xxxx --destination-cidr-block 0.0.0.0/0 --gateway-id igw-xxxx
-   ```
+4. Create an AMI from this instance (call it "BaseAMI")
 
-### Bastion Host Setup
+### 1.2 Create Nginx AMI
 
-1. **Deploy Bastion Host**:
-   - Launch an EC2 instance in the public subnet as a Bastion Host:
+1. Launch an EC2 instance using the BaseAMI
+2. Install Nginx:
 
-   ```bash
-   aws ec2 run-instances --image-id ami-xxxx --count 1 --instance-type t2.micro --key-name MyKeyPair --security-group-ids sg-xxxx --subnet-id subnet-xxxx --associate-public-ip-address
-   ```
+```bash
+sudo yum install nginx -y
+sudo systemctl start nginx
+sudo systemctl enable nginx
+```
 
-2. **Security Groups**:
-   - Create
+3. Create memory usage monitoring script:
 
- a security group allowing SSH access from your IP:
+```bash
+sudo vi /usr/local/bin/memory-monitor.sh
+```
 
-   ```bash
-   aws ec2 create-security-group --group-name BastionSG --description "Security group for Bastion Host" --vpc-id vpc-xxxx
-   aws ec2 authorize-security-group-ingress --group-id sg-xxxx --protocol tcp --port 22 --cidr YOUR_IP/32
-   ```
+Paste the memory monitoring script from the README.
 
-## Maven (Build)
+```bash
+sudo chmod +x /usr/local/bin/memory-monitor.sh
+sudo crontab -e
+```
 
-### EC2 Instance for Maven Build
+Add the following line to run the script every minute:
+```
+* * * * * /usr/local/bin/memory-monitor.sh >> /var/log/memory-monitor.log 2>&1
+```
 
-1. **Launch EC2 Instance Using Maven AMI**:
-   - Launch an EC2 instance using the Maven Golden AMI:
+4. Create an AMI from this instance (call it "NginxAMI")
 
-   ```bash
-   aws ec2 run-instances --image-id ami-maven --count 1 --instance-type t2.micro --key-name MyKeyPair --security-group-ids sg-maven --subnet-id subnet-maven
-   ```
+### 1.3 Create Tomcat AMI
 
-2. **Clone the Repository**:
-   - Connect to the instance and clone your GitHub repository:
+1. Launch an EC2 instance using the BaseAMI
+2. Install Tomcat 9:
 
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
-   cd YOUR_REPO
-   ```
+```bash
+sudo vi /usr/local/bin/install-tomcat.sh
+```
 
-3. **Update `pom.xml`**:
-   - Update `pom.xml` with SonarCloud and JFrog deployment details.
+Paste the Tomcat installation script from the README.
 
-4. **Build the Application**:
-   - Run the Maven build command to compile the project:
+```bash
+sudo chmod +x /usr/local/bin/install-tomcat.sh
+sudo /usr/local/bin/install-tomcat.sh
+```
 
-   ```bash
-   mvn clean install -s settings.xml
-   ```
+3. Create an AMI from this instance (call it "TomcatAMI")
 
-5. **SonarCloud Integration**:
-   - Integrate SonarCloud with Maven:
+### 1.4 Create Maven AMI
 
-   ```bash
-   mvn sonar:sonar -Dsonar.projectKey=YOUR_PROJECT_KEY -Dsonar.organization=YOUR_ORGANIZATION -Dsonar.host.url=https://sonarcloud.io -Dsonar.login=YOUR_SONAR_TOKEN
-   ```
+1. Launch an EC2 instance using the BaseAMI
+2. Install Maven and Git:
 
-## 3-Tier Architecture
+```bash
+sudo yum install git maven java-1.8.0-amazon-corretto-devel -y
+```
 
-### Database Tier (RDS)
+3. Create an AMI from this instance (call it "MavenAMI")
 
-1. **Deploy MySQL RDS**:
-   - Create a MySQL RDS instance in the private subnet:
+## Step 2: VPC and Network Setup
 
-   ```bash
-   aws rds create-db-instance --db-instance-identifier mydbinstance --db-instance-class db.t2.micro --engine mysql --allocated-storage 20 --master-username admin --master-user-password password --vpc-security-group-ids sg-db --db-subnet-group-name mydbsubnetgroup
-   ```
+### 2.1 Create VPCs and Subnets
 
-### Backend Tier (Tomcat)
+1. Create two VPCs:
 
-1. **Network Load Balancer**:
-   - Create a private-facing Network Load Balancer:
+```bash
+# Create Application VPC
+aws ec2 create-vpc --cidr-block 192.168.0.0/16 --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=AppVPC}]' --region us-east-1
 
-   ```bash
-   aws elbv2 create-load-balancer --name private-nlb --subnets subnet-xxxx subnet-yyyy --type network
-   ```
+# Create Database VPC
+aws ec2 create-vpc --cidr-block 172.32.0.0/16 --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=DBVPC}]' --region us-east-1
+```
 
-2. **Auto Scaling Group**:
-   - Set up an Auto Scaling Group for the Tomcat instances:
+2. Create subnets for each VPC:
 
-   ```bash
-   aws autoscaling create-auto-scaling-group --auto-scaling-group-name tomcat-asg --launch-configuration-name TomcatLC --min-size 1 --max-size 3 --vpc-zone-identifier subnet-xxxx,subnet-yyyy
-   ```
+```bash
+# Create public subnets in AppVPC
+aws ec2 create-subnet --vpc-id vpc-app-id --cidr-block 192.168.1.0/24 --availability-zone us-east-1a --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=AppPublicSubnet1}]'
+aws ec2 create-subnet --vpc-id vpc-app-id --cidr-block 192.168.2.0/24 --availability-zone us-east-1b --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=AppPublicSubnet2}]'
 
-### Frontend Tier (Nginx)
+# Create private subnets in AppVPC
+aws ec2 create-subnet --vpc-id vpc-app-id --cidr-block 192.168.3.0/24 --availability-zone us-east-1a --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=AppPrivateSubnet1}]'
+aws ec2 create-subnet --vpc-id vpc-app-id --cidr-block 192.168.4.0/24 --availability-zone us-east-1b --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=AppPrivateSubnet2}]'
 
-1. **Public Network Load Balancer**:
-   - Create a public-facing Network Load Balancer:
+# Create subnets in DBVPC
+aws ec2 create-subnet --vpc-id vpc-db-id --cidr-block 172.32.1.0/24 --availability-zone us-east-1a --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=DBSubnet1}]'
+aws ec2 create-subnet --vpc-id vpc-db-id --cidr-block 172.32.2.0/24 --availability-zone us-east-1b --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=DBSubnet2}]'
+```
 
-   ```bash
-   aws elbv2 create-load-balancer --name public-nlb --subnets subnet-xxxx subnet-yyyy --type network
-   ```
+### 2.2 Create Internet Gateway and NAT Gateway
 
-2. **Auto Scaling Group**:
-   - Set up an Auto Scaling Group for the Nginx instances:
+1. Create Internet Gateway for AppVPC:
 
-   ```bash
-   aws autoscaling create-auto-scaling-group --auto-scaling-group-name nginx-asg --launch-configuration-name NginxLC --min-size 1 --max-size 3 --vpc-zone-identifier subnet-xxxx,subnet-yyyy
-   ```
+```bash
+aws ec2 create-internet-gateway --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=AppIGW}]'
+aws ec2 attach-internet-gateway --vpc-id vpc-app-id --internet-gateway-id igw-id
+```
 
-## Application Deployment
+2. Create NAT Gateway:
 
-### Deploying Artifacts
+```bash
+# Allocate Elastic IP
+aws ec2 allocate-address --domain vpc
 
-1. **User Data Scripts**:
-   - Use user data scripts to deploy artifacts during the EC2 instance launch. Ensure the script fetches the `.war` file from JFrog and places it in the Tomcat `webapps` directory.
+# Create NAT Gateway in a public subnet
+aws ec2 create-nat-gateway --subnet-id subnet-public1-id --allocation-id eipalloc-id --tag-specifications 'ResourceType=natgateway,Tags=[{Key=Name,Value=AppNATGW}]'
+```
 
-2. **Database Setup**:
-   - Log into the MySQL database from the Tomcat server and create the database schema:
+### 2.3 Create Route Tables
 
-   ```bash
-   mysql -h mydbinstance.123456789012.us-east-1.rds.amazonaws.com -u admin -p
-   CREATE DATABASE mydatabase;
-   USE mydatabase;
-   SOURCE /path/to/schema.sql;
-   ```
+1. Create and configure route tables for public subnets:
 
-## Post-Deployment
+```bash
+aws ec2 create-route-table --vpc-id vpc-app-id --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=AppPublicRT}]'
+aws ec2 create-route --route-table-id rtb-public-id --destination-cidr-block 0.0.0.0/0 --gateway-id igw-id
+aws ec2 associate-route-table --subnet-id subnet-public1-id --route-table-id rtb-public-id
+aws ec2 associate-route-table --subnet-id subnet-public2-id --route-table-id rtb-public-id
+```
 
-### Logging and Monitoring
+2. Create and configure route tables for private subnets:
 
-1. **Cron Job for Logs**:
-   - Set up a Cron job to push Tomcat logs to an S3 bucket:
+```bash
+aws ec2 create-route-table --vpc-id vpc-app-id --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=AppPrivateRT}]'
+aws ec2 create-route --route-table-id rtb-private-id --destination-cidr-block 0.0.0.0/0 --nat-gateway-id natgw-id
+aws ec2 associate-route-table --subnet-id subnet-private1-id --route-table-id rtb-private-id
+aws ec2 associate-route-table --subnet-id subnet-private2-id --route-table-id rtb-private-id
+```
 
-   ```bash
-   crontab -e
-   ```
+### 2.4 Create Transit Gateway
 
-   Add the following entry:
+1. Create Transit Gateway:
 
-   ```bash
-   0 0 * * * /usr/bin/aws s3 cp /path/to/tomcat/logs s3://mybucket/tomcat-logs/ --recursive --region us-east-1 && rm -rf /path/to/tomcat/logs/*
-   ```
+```bash
+aws ec2 create-transit-gateway --description "Transit Gateway for connection between VPCs" --tag-specifications 'ResourceType=transit-gateway,Tags=[{Key=Name,Value=AppDBTGW}]'
+```
 
-2. **CloudWatch Alarms**:
-   - Set up CloudWatch alarms to monitor database connections:
+2. Attach VPCs to Transit Gateway:
 
-   ```bash
-   aws cloudwatch put-metric-alarm --alarm-name "DBConnectionsHigh" --metric-name DatabaseConnections --namespace AWS/RDS --statistic Average --period 300 --threshold 100 --comparison-operator GreaterThanOrEqualToThreshold --evaluation-periods 1 --alarm-actions arn:aws:sns:us-east-1:123456789012:MySNSTopic
-   ```
+```bash
+aws ec2 create-transit-gateway-vpc-attachment --transit-gateway-id tgw-id --vpc-id vpc-app-id --subnet-ids subnet-private1-id subnet-private2-id --tag-specifications 'ResourceType=transit-gateway-attachment,Tags=[{Key=Name,Value=AppVPCAttachment}]'
 
-## Validation
+aws ec2 create-transit-gateway-vpc-attachment --transit-gateway-id tgw-id --vpc-id vpc-db-id --subnet-ids subnet-db1-id subnet-db2-id --tag-specifications 'ResourceType=transit-gateway-attachment,Tags=[{Key=Name,Value=DBVPCAttachment}]'
+```
 
-1. **EC2 Access**:
-   - Verify SSH access to EC2 instances via the Bastion Host and Systems Manager.
+3. Update route tables to use Transit Gateway:
 
-2. **Application Accessibility**:
-   - Ensure the application is accessible from a public internet browser.
+```bash
+# App VPC private route table
+aws ec2 create-route --route-table-id rtb-private-id --destination-cidr-block 172.32.0.0/16 --transit-gateway-id tgw-id
 
-## Final Note
+# DB VPC route table
+aws ec2 create-route-table --vpc-id vpc-db-id --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=DBPrivateRT}]'
+aws ec2 create-route --route-table-id rtb-db-id --destination-cidr-block 192.168.0.0/16 --transit-gateway-id tgw-id
+aws ec2 associate-route-table --subnet-id subnet-db1-id --route-table-id rtb-db-id
+aws ec2 associate-route-table --subnet-id subnet-db2-id --route-table-id rtb-db-id
+```
 
-> [!Important]
->
-> _If you find this repository useful for learning, please give it a star on GitHub. Thank you!_
+### 2.5 Create Security Groups
 
----
+1. Create security group for Bastion Host:
+
+```bash
+aws ec2 create-security-group --group-name BastionSG --description "Security group for Bastion Host" --vpc-id vpc-app-id --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=BastionSG}]'
+aws ec2 authorize-security-group-ingress --group-id sg-bastion-id --protocol tcp --port 22 --cidr YOUR_IP/32
+```
+
+2. Create security group for Nginx:
+
+```bash
+aws ec2 create-security-group --group-name NginxSG --description "Security group for Nginx servers" --vpc-id vpc-app-id --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=NginxSG}]'
+aws ec2 authorize-security-group-ingress --group-id sg-nginx-id --protocol tcp --port 80 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id sg-nginx-id --protocol tcp --port 443 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id sg-nginx-id --protocol tcp --port 22 --source-group sg-bastion-id
+```
+
+3. Create security group for Tomcat:
+
+```bash
+aws ec2 create-security-group --group-name TomcatSG --description "Security group for Tomcat servers" --vpc-id vpc-app-id --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=TomcatSG}]'
+aws ec2 authorize-security-group-ingress --group-id sg-tomcat-id --protocol tcp --port 8080 --source-group sg-nginx-id
+aws ec2 authorize-security-group-ingress --group-id sg-tomcat-id --protocol tcp --port 22 --source-group sg-bastion-id
+```
+
+4. Create security group for RDS:
+
+```bash
+aws ec2 create-security-group --group-name RDSSG --description "Security group for RDS" --vpc-id vpc-db-id --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=RDSSG}]'
+aws ec2 authorize-security-group-ingress --group-id sg-rds-id --protocol tcp --port 3306 --source-group sg-tomcat-id
+```
+
+### 2.6 Create Bastion Host
+
+```bash
+aws ec2 run-instances --image-id ami-amazonlinux2 --count 1 --instance-type t2.micro --key-name MyKeyPair --security-group-ids sg-bastion-id --subnet-id subnet-public1-id --associate-public-ip-address --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=BastionHost}]'
+```
+
+## Step 3: Database Tier Setup
+
+### 3.1 Create RDS Subnet Group
+
+```bash
+aws rds create-db-subnet-group --db-subnet-group-name db-subnet-group --db-subnet-group-description "DB subnet group" --subnet-ids subnet-db1-id subnet-db2-id --tags 'Key=Name,Value=DBSubnetGroup'
+```
+
+### 3.2 Create RDS Instance
+
+```bash
+aws rds create-db-instance --db-instance-identifier mydbinstance --db-instance-class db.t2.micro --engine mysql --engine-version 8.0 --allocated-storage 20 --master-username admin --master-user-password YourPassword123 --vpc-security-group-ids sg-rds-id --db-subnet-group-name db-subnet-group --availability-zone us-east-1a --backup-retention-period 7 --port 3306 --multi-az --tags 'Key=Name,Value=AppDB'
+```
+
+## Step 4: Build and Deploy Application
+
+### 4.1 Set Up Maven Build Server
+
+1. Launch an EC2 instance using the MavenAMI:
+
+```bash
+aws ec2 run-instances --image-id ami-maven-id --count 1 --instance-type t2.micro --key-name MyKeyPair --security-group-ids sg-bastion-id --subnet-id subnet-public1-id --associate-public-ip-address --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=MavenBuildServer}]'
+```
+
+2. Connect to the instance via Bastion Host and clone the repository:
+
+```bash
+ssh -i MyKeyPair.pem ec2-user@bastion-public-ip
+ssh -i MyKeyPair.pem ec2-user@maven-private-ip
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
+cd YOUR_REPO
+```
+
+3. Update `pom.xml` with SonarCloud and JFrog details:
+
+```xml
+<properties>
+    <sonar.projectKey>YOUR_PROJECT_KEY</sonar.projectKey>
+    <sonar.organization>YOUR_ORGANIZATION</sonar.organization>
+    <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+</properties>
+
+<distributionManagement>
+    <repository>
+        <id>jfrog-repository</id>
+        <name>JFrog Maven Repository</name>
+        <url>https://YOUR_JFROG_REPO_URL/artifactory/maven-releases</url>
+    </repository>
+</distributionManagement>
+```
+
+4. Create `settings.xml` for Maven:
+
+```xml
+<settings>
+    <servers>
+        <server>
+            <id>jfrog-repository</id>
+            <username>YOUR_JFROG_USERNAME</username>
+            <password>YOUR_JFROG_PASSWORD</password>
+        </server>
+    </servers>
+</settings>
+```
+
+5. Build the application:
+
+```bash
+mvn clean install -s settings.xml
+```
+
+6. Run SonarCloud analysis:
+
+```bash
+mvn sonar:sonar -Dsonar.login=YOUR_SONAR_TOKEN
+```
+
+7. Deploy to JFrog:
+
+```bash
+mvn deploy -s settings.xml
+```
+
+### 4.2 Set Up Backend Tier (Tomcat)
+
+1. Create a launch template for Tomcat instances:
+
+```bash
+aws ec2 create-launch-template --launch-template-name TomcatLaunchTemplate --version-description "Initial version" --launch-template-data '{"ImageId":"ami-tomcat-id","InstanceType":"t2.micro","KeyName":"MyKeyPair","SecurityGroupIds":["sg-tomcat-id"],"UserData":"#!/bin/bash\naws s3 cp s3://mybucket/tomcat-setup.sh /tmp/\nchmod +x /tmp/tomcat-setup.sh\n/tmp/tomcat-setup.sh","TagSpecifications":[{"ResourceType":"instance","Tags":[{"Key":"Name","Value":"TomcatServer"}]}]}'
+```
+
+2. Create an Auto Scaling Group for Tomcat:
+
+```bash
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name TomcatASG --launch-template "LaunchTemplateName=TomcatLaunchTemplate,Version=1" --min-size 2 --max-size 4 --desired-capacity 2 --vpc-zone-identifier "subnet-private1-id,subnet-private2-id" --target-group-arns "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tomcat-tg/abcdef1234567890" --health-check-type ELB --health-check-grace-period 300
+```
+
+3. Create a Network Load Balancer for Tomcat:
+
+```bash
+aws elbv2 create-load-balancer --name TomcatNLB --scheme internal --type network --subnets subnet-private1-id subnet-private2-id --tags Key=Name,Value=TomcatNLB
+```
+
+4. Create a target group for Tomcat:
+
+```bash
+aws elbv2 create-target-group --name tomcat-tg --protocol TCP --port 8080 --vpc-id vpc-app-id --target-type instance --health-check-protocol TCP --health-check-port 8080
+```
+
+5. Create a listener for the NLB:
+
+```bash
+aws elbv2 create-listener --load-balancer-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/TomcatNLB/abcdef1234567890 --protocol TCP --port 8080 --default-actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tomcat-tg/abcdef1234567890
+```
+
+### 4.3 Set Up Frontend Tier (Nginx)
+
+1. Create a launch template for Nginx instances:
+
+```bash
+aws ec2 create-launch-template --launch-template-name NginxLaunchTemplate --version-description "Initial version" --launch-template-data '{"ImageId":"ami-nginx-id","InstanceType":"t2.micro","KeyName":"MyKeyPair","SecurityGroupIds":["sg-nginx-id"],"UserData":"#!/bin/bash\naws s3 cp s3://mybucket/nginx-setup.sh /tmp/\nchmod +x /tmp/nginx-setup.sh\n/tmp/nginx-setup.sh","TagSpecifications":[{"ResourceType":"instance","Tags":[{"Key":"Name","Value":"NginxServer"}]}]}'
+```
+
+2. Create an Auto Scaling Group for Nginx:
+
+```bash
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name NginxASG --launch-template "LaunchTemplateName=NginxLaunchTemplate,Version=1" --min-size 2 --max-size 4 --desired-capacity 2 --vpc-zone-identifier "subnet-public1-id,subnet-public2-id" --target-group-arns "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/nginx-tg/abcdef1234567890" --health-check-type ELB --health-check-grace-period 300
+```
+
+3. Create a Network Load Balancer for Nginx:
+
+```bash
+aws elbv2 create-load-balancer --name NginxNLB --scheme internet-facing --type network --subnets subnet-public1-id subnet-public2-id --tags Key=Name,Value=NginxNLB
+```
+
+4. Create a target group for Nginx:
+
+```bash
+aws elbv2 create-target-group --name nginx-tg --protocol TCP --port 80 --vpc-id vpc-app-id --target-type instance --health-check-protocol TCP --health-check-port 80
+```
+
+5. Create a listener for the NLB:
+
+```bash
+aws elbv2 create-listener --load-balancer-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/NginxNLB/abcdef1234567890 --protocol TCP --port 80 --default-actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/nginx-tg/abcdef1234567890
+```
+
+## Step 5: Configuration Files
+
+### 5.1 Create Tomcat Setup Script
+
+Create a file named `tomcat-setup.sh` and upload it to S3:
+
+```bash
+#!/bin/bash
+
+# Download war file from JFrog
+aws s3 cp s3://mybucket/credentials.properties /opt/tomcat9/conf/
+
+# Create context.xml with database connection
+cat > /opt/tomcat9/conf/context.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<Context>
+    <Resource name="jdbc/mydb" auth="Container" type="javax.sql.DataSource"
+              maxTotal="100" maxIdle="30" maxWaitMillis="10000"
+              username="admin" password="YourPassword123" driverClassName="com.mysql.cj.jdbc.Driver"
+              url="jdbc:mysql://mydbinstance.123456789012.us-east-1.rds.amazonaws.com:3306/mydatabase"/>
+</Context>
+EOF
+
+# Download war file from JFrog
+curl -u YOUR_JFROG_USERNAME:YOUR_JFROG_PASSWORD https://YOUR_JFROG_REPO_URL/artifactory/maven-releases/com/example/myapp/1.0/myapp-1.0.war -o /opt/tomcat9/webapps/ROOT.war
+
+# Restart Tomcat
+systemctl restart tomcat
+```
+
+### 5.2 Create Nginx Setup Script
+
+Create a file named `nginx-setup.sh` and upload it to S3:
+
+```bash
+#!/bin/bash
+
+# Configure Nginx
+cat > /etc/nginx/conf.d/app.conf << EOF
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://internal-TomcatNLB-1234567890.us-east-1.elb.amazonaws.com:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+# Restart Nginx
+systemctl restart nginx
+```
+
+## Step 6: Setup Monitoring and Logging
+
+### 6.1 Create CloudWatch Alarms
+
+1. Create an alarm for high CPU utilization:
+
+```bash
+aws cloudwatch put-metric-alarm --alarm-name HighCPUUtilization --alarm-description "Alarm when CPU exceeds 80%" --metric-name CPUUtilization --namespace AWS/EC2 --statistic Average --period 300 --threshold 80 --comparison-operator GreaterThanThreshold --dimensions Name=AutoScalingGroupName,Value=TomcatASG --evaluation-periods 2 --alarm-actions arn:aws:sns:us-east-1:123456789012:AlertTopic
+```
+
+2. Create an alarm for database connections:
+
+```bash
+aws cloudwatch put-metric-alarm --alarm-name DBConnectionsHigh --alarm-description "Alarm when DB connections exceed 100" --metric-name DatabaseConnections --namespace AWS/RDS --statistic Average --period 300 --threshold 100 --comparison-operator GreaterThanOrEqualToThreshold --dimensions Name=DBInstanceIdentifier,Value=mydbinstance --evaluation-periods 1 --alarm-actions arn:aws:sns:us-east-1:123456789012:AlertTopic
+```
+
+### 6.2 Configure S3 for Logs
+
+1. Create an S3 bucket for logs:
+
+```bash
+aws s3 mb s3://myapp-logs-bucket
+```
+
+2. Create a cron job to push logs to S3:
+
+```bash
+crontab -e
+```
+
+Add the following entry:
+
+```
+0 0 * * * /usr/bin/aws s3 cp /opt/tomcat9/logs s3://myapp-logs-bucket/tomcat-logs/$(date +\%Y-\%m-\%d)/ --recursive --region us-east-1 && rm -rf /opt/tomcat9/logs/catalina.out
+```
+
+## Step 7: Test and Validate
+
+1. Get the DNS name of the public NLB:
+
+```bash
+aws elbv2 describe-load-balancers --names NginxNLB --query 'LoadBalancers[0].DNSName' --output text
+```
+
+2. Access the application using the NLB DNS name in a web browser.
+
+3. Validate SSH access to EC2 instances via the Bastion Host:
+
+```bash
+ssh -i MyKeyPair.pem ec2-user@bastion-public-ip
+ssh -i MyKeyPair.pem ec2-user@target-private-ip
+```
+
+4. Verify database connectivity:
+
+```bash
+mysql -h mydbinstance.123456789012.us-east-1.rds.amazonaws.com -u admin -p
+```
+
+5. Check CloudWatch metrics and logs to ensure everything is working properly.
+
+## Conclusion
+
+You have successfully deployed a Java application on AWS using a 3-tier architecture. The application is now:
+- Highly available through multiple AZs
+- Scalable via Auto Scaling Groups
+- Secure with proper network segmentation and security groups
+- Monitored with CloudWatch alarms and logging
+
+Remember to regularly review and update your infrastructure to maintain security and performance.
